@@ -1,19 +1,72 @@
 import * as THREE from 'three';
 import type { LevelData } from './assets';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { Octree } from 'three/addons/math/Octree.js';
 import { Capsule } from 'three/addons/math/Capsule.js';
 import { boxTriangleContact } from './vehicle-collision';
+import { capsuleTriangleContact } from './collision';
 import { simulateVehicle,type VehicleMotion } from './vehicle-physics';
 
 export interface Controls {steer:number;throttle:number;brake:number;handbrake:boolean}
 export interface CarState {position:THREE.Vector3;heading:number;speed:number;verticalSpeed:number;steer:number;distance:number;damage:number;grounded?:boolean;vehicleMotion?:VehicleMotion;supportVehicle?:string}
 const up=new THREE.Vector3(0,1,0), down=new THREE.Vector3(0,-1,0);
-export interface DynamicSolid {id:string;active:boolean;mesh:THREE.Mesh;tree:Octree;bounds:THREE.Box3}
+export interface DynamicSolid {id:string;active:boolean;mesh:THREE.Mesh;bounds:THREE.Box3}
 export interface VehiclePlatform {id:string;position:THREE.Vector3;heading:number;orientation?:THREE.Quaternion;half:THREE.Vector3;center:THREE.Vector3}
 
 export function drive(state:CarState,control:Controls,dt:number,tuning?:Record<string,number>) {
   simulateVehicle(state,control,dt,tuning);
+}
+
+/** One surface the walking capsule can stand on or be stopped by. */
+interface CapsuleCollider {mesh?:THREE.Mesh;triangles?:THREE.Triangle[];upward?:boolean}
+const _capsule=new Capsule(),_bounds=new THREE.Box3(),_center=new THREE.Vector3(),_start=new THREE.Vector3();
+/**
+ * Total push-out of a capsule from one group of colliders.
+ *
+ * Each contact moves a working copy, so a corner resolves against every
+ * triangle it touches. Candidates come from the bounds of the capsule before
+ * any of that movement, matching the native walk solver.
+ */
+function capsulePushOut(capsule:Capsule,colliders:CapsuleCollider[]){
+  _capsule.copy(capsule);
+  _bounds.makeEmpty().expandByPoint(capsule.start).expandByPoint(capsule.end).expandByScalar(capsule.radius);
+  let hit=false;
+  const push=(triangle:THREE.Triangle,upward:boolean)=>{
+    // A bounds tree leaf holds triangles the capsule never reaches. Reject those
+    // on their own extents before the plane and edge tests.
+    if(Math.min(triangle.a.x,triangle.b.x,triangle.c.x)>_bounds.max.x||Math.max(triangle.a.x,triangle.b.x,triangle.c.x)<_bounds.min.x
+     ||Math.min(triangle.a.y,triangle.b.y,triangle.c.y)>_bounds.max.y||Math.max(triangle.a.y,triangle.b.y,triangle.c.y)<_bounds.min.y
+     ||Math.min(triangle.a.z,triangle.b.z,triangle.c.z)>_bounds.max.z||Math.max(triangle.a.z,triangle.b.z,triangle.c.z)<_bounds.min.z)return;
+    const contact=capsuleTriangleContact(_capsule,triangle,upward);
+    if(!contact)return;
+    hit=true;_capsule.translate(contact.normal.multiplyScalar(contact.depth));
+  };
+  for(const collider of colliders){
+    if(collider.triangles){for(const triangle of collider.triangles)push(triangle,false);continue;}
+    collider.mesh?.geometry.boundsTree?.shapecast({
+      intersectsBounds:box=>box.intersectsBox(_bounds),
+      intersectsTriangle:triangle=>{push(triangle,collider.upward===true);return false;}
+    });
+  }
+  if(!hit)return undefined;
+  const displacement=_capsule.getCenter(_center).sub(capsule.getCenter(_start));
+  return {normal:displacement.clone().normalize(),depth:displacement.length()};
+}
+/**
+ * World-space triangles of a mesh, for colliders too small to earn a bounds
+ * tree. A moving vehicle rewrites its own box every frame, so reuse the
+ * triangles already there rather than allocating a new set each time.
+ */
+function worldTriangles(mesh:THREE.Mesh,triangles:THREE.Triangle[]){
+  const position=mesh.geometry.getAttribute('position'),index=mesh.geometry.index;
+  const count=(index?.count??position.count)/3;
+  while(triangles.length<count)triangles.push(new THREE.Triangle());
+  triangles.length=count;
+  for(let i=0;i<count;i++){
+    const triangle=triangles[i];
+    for(const [j,vertex] of ([triangle.a,triangle.b,triangle.c] as const).entries())
+      vertex.fromBufferAttribute(position,index?index.getX(i*3+j):i*3+j).applyMatrix4(mesh.matrixWorld);
+  }
+  return triangles;
 }
 
 export class Terrain {
@@ -23,9 +76,8 @@ export class Terrain {
   private origin=new THREE.Vector3();
   private fences:LevelData['fences'];
   private grid=new Map<string,number[]>();
-  private bodyTree?:Octree;
   private dynamic=new Map<string,DynamicSolid>();private dynamicGrid=new Map<string,DynamicSolid[]>();
-  private platforms=new Map<string,{mesh:THREE.Mesh;tree:Octree;position:THREE.Vector3;delta:THREE.Vector3;bounds:THREE.Box3}>();
+  private platforms=new Map<string,{mesh:THREE.Mesh;triangles:THREE.Triangle[];position:THREE.Vector3;delta:THREE.Vector3;bounds:THREE.Box3}>();
   onVehicleImpact?:(id:string,speed:number,point:THREE.Vector3)=>boolean;
   constructor(geometries:THREE.BufferGeometry[],data:LevelData,staticBodies?:THREE.BufferGeometry,private terrainTypes?:number[]) {
     const geometry=mergeGeometries(geometries);
@@ -37,20 +89,6 @@ export class Terrain {
     if(staticBodies){
       const solidGeometry=staticBodies.clone();solidGeometry.computeBoundsTree();
       this.solids=new THREE.Mesh(solidGeometry,new THREE.MeshBasicMaterial({side:THREE.DoubleSide}));this.solids.updateMatrixWorld();
-      this.bodyTree=new Octree();
-      for(const source of [geometry,staticBodies]){
-        const positions=source.getAttribute('position'),indices=source.index;
-        for(let i=0;i<(indices?.count??positions.count);i+=3){
-          const points=[0,1,2].map(j=>new THREE.Vector3().fromBufferAttribute(positions,indices?indices.getX(i+j):i+j));
-          const triangle=new THREE.Triangle(points[0],points[1],points[2]);
-          if(triangle.getArea()<1e-8)continue;
-          // Intersect surfaces were exported for double-sided ground rays. The
-          // capsule solver needs upward floor winding; static solids face outward.
-          if(source===geometry&&triangle.getNormal(new THREE.Vector3()).y<0){triangle.a=points[2];triangle.c=points[0];}
-          this.bodyTree.addTriangle(triangle);
-        }
-      }
-      this.bodyTree.build();
     }
     this.ray.firstHitOnly=true;
     this.fences=data.fences;
@@ -73,7 +111,7 @@ export class Terrain {
   }
   addSolid(id:string,geometry:THREE.BufferGeometry){
     geometry.computeBoundsTree();geometry.computeBoundingBox();const mesh=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({side:THREE.DoubleSide}));mesh.updateMatrixWorld();
-    const body:DynamicSolid={id,mesh,tree:new Octree().fromGraphNode(mesh),bounds:geometry.boundingBox!.clone(),active:true};this.dynamic.set(id,body);
+    const body:DynamicSolid={id,mesh,bounds:geometry.boundingBox!.clone(),active:true};this.dynamic.set(id,body);
     for(let x=Math.floor(body.bounds.min.x/20);x<=Math.floor(body.bounds.max.x/20);x++)for(let z=Math.floor(body.bounds.min.z/20);z<=Math.floor(body.bounds.max.z/20);z++){
       const key=`${x},${z}`,bucket=this.dynamicGrid.get(key)??[];bucket.push(body);this.dynamicGrid.set(key,bucket);
     }
@@ -86,13 +124,13 @@ export class Terrain {
   }
   setVehiclePlatforms(vehicles:VehiclePlatform[]){
     const active=new Set(vehicles.map(v=>v.id));
-    for(const [id,p] of this.platforms)if(!active.has(id)){p.tree.clear();p.mesh.geometry.dispose();(p.mesh.material as THREE.Material).dispose();this.platforms.delete(id);}
+    for(const [id,p] of this.platforms)if(!active.has(id)){p.mesh.geometry.dispose();(p.mesh.material as THREE.Material).dispose();this.platforms.delete(id);}
     for(const vehicle of vehicles){
       let platform=this.platforms.get(vehicle.id);
-      if(!platform){platform={mesh:new THREE.Mesh(new THREE.BoxGeometry(vehicle.half.x*2,vehicle.half.y*2,vehicle.half.z*2),new THREE.MeshBasicMaterial()),tree:new Octree(),position:vehicle.position.clone(),delta:new THREE.Vector3(),bounds:new THREE.Box3()};this.platforms.set(vehicle.id,platform);}
+      if(!platform){platform={mesh:new THREE.Mesh(new THREE.BoxGeometry(vehicle.half.x*2,vehicle.half.y*2,vehicle.half.z*2),new THREE.MeshBasicMaterial()),triangles:[],position:vehicle.position.clone(),delta:new THREE.Vector3(),bounds:new THREE.Box3()};this.platforms.set(vehicle.id,platform);}
       platform.delta.copy(vehicle.position).sub(platform.position);platform.position.copy(vehicle.position);
       const previous=platform.mesh.matrixWorld.clone();platform.mesh.quaternion.copy(vehicle.orientation??new THREE.Quaternion().setFromAxisAngle(up,vehicle.heading));platform.mesh.position.copy(vehicle.center).applyQuaternion(platform.mesh.quaternion).add(vehicle.position);platform.mesh.updateMatrixWorld();
-      if(!previous.equals(platform.mesh.matrixWorld)||platform.bounds.isEmpty()){platform.tree.clear();platform.tree=new Octree().fromGraphNode(platform.mesh);platform.bounds.setFromObject(platform.mesh);}
+      if(!previous.equals(platform.mesh.matrixWorld)||platform.bounds.isEmpty()){worldTriangles(platform.mesh,platform.triangles);platform.bounds.setFromObject(platform.mesh);}
     }
   }
   carry(state:CarState){if(state.grounded&&state.supportVehicle){const platform=this.platforms.get(state.supportVehicle);if(platform)state.position.add(platform.delta);}}
@@ -120,7 +158,7 @@ export class Terrain {
     return contact;
   }
   resolve(state:CarState,previous:THREE.Vector3,dt:number,radius=1.2,collideMesh=false,gravity=18) {
-    const bodyCollision=collideMesh&&!!this.bodyTree;
+    const bodyCollision=collideMesh&&!!this.solids;
     let impact=false;
     const candidates=new Set<number>();
     const gx=Math.floor(state.position.x/20),gz=Math.floor(state.position.z/20);
@@ -168,13 +206,20 @@ export class Terrain {
     const steps=Math.max(1,Math.ceil(movement.length()/(radius*.5)));
     movement.divideScalar(steps);
     const capsule=new Capsule(previous.clone().add(new THREE.Vector3(0,radius-clearance,0)),previous.clone().add(new THREE.Vector3(0,height-radius-clearance,0)),radius);
-    const trees:[Octree,string|undefined][]=[[this.bodyTree!,undefined],...this.nearbySolids(previous,movement.length()*steps+radius+1).map(b=>[b.tree,undefined] as [Octree,undefined]),...[...this.platforms.entries()].filter(([,p])=>p.bounds.distanceToPoint(previous)<movement.length()*steps+height+radius).map(([id,p])=>[p.tree,id] as [Octree,string])];
+    // The world surfaces resolve as one group, so a floor and a wall meeting in
+    // a corner both move the capsule before the deepest push-out is chosen.
+    const reach=movement.length()*steps;
+    const groups:[CapsuleCollider[],string|undefined][]=[
+      [[{mesh:this.mesh,upward:true},{mesh:this.solids}],undefined],
+      ...this.nearbySolids(previous,reach+radius+1).map(b=>[[{mesh:b.mesh}],undefined] as [CapsuleCollider[],undefined]),
+      ...[...this.platforms.entries()].filter(([,p])=>p.bounds.distanceToPoint(previous)<reach+height+radius).map(([id,p])=>[[{triangles:p.triangles}],id] as [CapsuleCollider[],string]),
+    ];
     let impact=false;
     for(let step=0;step<steps;step++){
       capsule.translate(movement);
       for(let iteration=0;iteration<4;iteration++){
-        let hit:ReturnType<Octree['capsuleIntersect']>=false,support:string|undefined;
-        for(const [tree,id] of trees){const next=tree.capsuleIntersect(capsule);if(next&&(!hit||next.depth>hit.depth)){hit=next;support=id;}}
+        let hit:ReturnType<typeof capsulePushOut>,support:string|undefined;
+        for(const [group,id] of groups){const next=capsulePushOut(capsule,group);if(next&&(!hit||next.depth>hit.depth)){hit=next;support=id;}}
         if(!hit||hit.depth<1e-7)break;
         capsule.translate(hit.normal.clone().multiplyScalar(hit.depth+1e-6));
         if(Math.abs(hit.normal.y)<.5)impact=true;
@@ -192,5 +237,5 @@ export class Terrain {
     if(!hit?.face)return up;
     return hit.face.normal.y<0?hit.face.normal.clone().negate():hit.face.normal;
   }
-  dispose(){this.bodyTree?.clear();this.setVehiclePlatforms([]);for(const body of this.dynamic.values())body.tree.clear();for(const mesh of [this.mesh,this.solids,...[...this.dynamic.values()].map(b=>b.mesh)])if(mesh){mesh.geometry.disposeBoundsTree();mesh.geometry.dispose();(mesh.material as THREE.Material).dispose();}this.dynamic.clear();this.dynamicGrid.clear();}
+  dispose(){this.setVehiclePlatforms([]);for(const mesh of [this.mesh,this.solids,...[...this.dynamic.values()].map(b=>b.mesh)])if(mesh){mesh.geometry.disposeBoundsTree();mesh.geometry.dispose();(mesh.material as THREE.Material).dispose();}this.dynamic.clear();this.dynamicGrid.clear();}
 }
