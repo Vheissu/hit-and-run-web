@@ -1,13 +1,12 @@
 import * as THREE from 'three';
-import { assetURL,json, type Assets } from './assets';
-interface CharacterData {placement?:number[];bones:{name:string;parent:number;matrix:number[]}[];primitives:{shader:string;attributes:Record<string,[number,number]>}[];materials:Record<string,{textureUrl:string}>;animations:{name:string;duration:number;tracks:{bone:string;kind:string;times:number[];values:number[]}[]}[]}
+import { type Assets } from './assets';
+export interface CharacterData {placement?:number[];bones:{name:string;parent:number;matrix:number[]}[];primitives:{shader:string;attributes:Record<string,[number,number]>}[];materials:Record<string,{textureUrl:string}>;animations:{name:string;duration:number;tracks:{bone:string;kind:string;times:number[];values:number[]}[]}[]}
 export class Character {
   group=new THREE.Group();private mixer=new THREE.AnimationMixer(this.group);private actions=new Map<string,THREE.AnimationAction>();private active='';
   private bones:THREE.Bone[]=[];private skeleton!:THREE.Skeleton;
   private meshes:THREE.SkinnedMesh[]=[];
   async load(assets:Assets,asset="homer"){
-    const [data,response]=await Promise.all([json<CharacterData>(`${asset}.json`),fetch(assetURL(`${asset}.bin`))]);
-    if(!response.ok)throw new Error('Homer geometry is missing');const binary=await response.arrayBuffer();
+    const {data,binary}=await assets.character(asset);
     this.bones=data.bones.map(source=>{const bone=new THREE.Bone();bone.name=source.name;bone.applyMatrix4(new THREE.Matrix4().fromArray(source.matrix));return bone;});
     data.bones.forEach((source,i)=>{if(i===0)this.group.add(this.bones[i]);else this.bones[source.parent].add(this.bones[i]);});
     this.group.updateMatrixWorld(true);this.skeleton=new THREE.Skeleton(this.bones);

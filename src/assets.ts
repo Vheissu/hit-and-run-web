@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import type { RoadNavigation } from './road-data';
+import type { CharacterData } from './character';
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
@@ -35,6 +36,7 @@ export class Assets {
   materials = new Map<string,THREE.Material>();
   geometries = new Set<THREE.BufferGeometry>();
   private pendingTextures=new Map<string,Promise<THREE.Texture>>();
+  private pendingCharacters=new Map<string,Promise<{data:CharacterData;binary:ArrayBuffer}>>();
   surfaceOverrides:Record<string,string>={};
   sceneryMaterials:Record<string,SceneryMaterial>={};sceneryScenes=new Set<string>();
   constructor(public catalog: Catalog) {}
@@ -44,6 +46,26 @@ export class Assets {
     const cached=this.textures.get(key);if(cached)return cached;
     let pending=this.pendingTextures.get(key);
     if(!pending){pending=(async()=>{const texture=await loadTexture(url);configure(texture);this.textures.set(key,texture);return texture;})();this.pendingTextures.set(key,pending);}
+    return pending;
+  }
+
+  /**
+   * Fetch a character's skeleton, geometry and animations once.
+   *
+   * A crowd repeats the same few models, and a caller that wants several can
+   * start them all before awaiting any, so the downloads overlap instead of
+   * queueing one behind the next.
+   */
+  character(asset:string){
+    let pending=this.pendingCharacters.get(asset);
+    if(!pending){
+      pending=(async()=>{
+        const [data,response]=await Promise.all([json<CharacterData>(`${asset}.json`),fetch(assetURL(`${asset}.bin`))]);
+        if(!response.ok)throw new Error(`Missing character geometry: ${asset}`);
+        return {data,binary:await response.arrayBuffer()};
+      })();
+      this.pendingCharacters.set(asset,pending);
+    }
     return pending;
   }
 
@@ -152,6 +174,6 @@ export class Assets {
   dispose() {
     this.geometries.forEach(g=>{g.disposeBoundsTree();g.dispose();});
     this.materials.forEach(m=>m.dispose());this.textures.forEach(t=>t.dispose());
-    this.geometries.clear();this.materials.clear();this.textures.clear();
+    this.geometries.clear();this.materials.clear();this.textures.clear();this.pendingCharacters.clear();
   }
 }
