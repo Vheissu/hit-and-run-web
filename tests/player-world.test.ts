@@ -34,6 +34,28 @@ test('the player can jump over a finite wall that blocks walking',()=>{
   for(let frame=0;frame<90;frame++)movement.update(player,{...idle,z:1,jump:frame===0||frame===22},1/60,world);
   assert(player.position.z>3,`blocked at ${player.position.toArray()}`);assert(player.position.y>.04);world.dispose();
 });
+test('walking reports the facing that the radar arrow and camera read',()=>{
+  const world=terrain(),player=state(),movement=new PlayerMovement();
+  for(let frame=0;frame<20;frame++)movement.update(player,{...idle,z:1},1/60,world,0);
+  assert(Math.abs(player.heading)<1e-6,`walking away faces ${player.heading}`);
+  for(let frame=0;frame<20;frame++)movement.update(player,{...idle,z:-1},1/60,world,0);
+  assert(Math.abs(Math.abs(player.heading)-Math.PI)<1e-6,`walking back faces ${player.heading}`);
+  assert(movement.velocity.z<-1,`walking back moves ${movement.velocity.z}`);world.dispose();
+});
+test('a held key keeps its world direction while the camera swings behind',()=>{
+  const world=terrain(),player=state(),movement=new PlayerMovement();
+  let cameraYaw=0;const headings:number[]=[];
+  for(let frame=0;frame<90;frame++){
+    movement.update(player,{...idle,z:-1},1/60,world,cameraYaw);
+    headings.push(movement.heading);
+    cameraYaw+=(THREE.MathUtils.euclideanModulo(movement.heading-cameraYaw+Math.PI,Math.PI*2)-Math.PI)*(1-Math.exp(-2.2/60));
+  }
+  const drift=Math.max(...headings.map(h=>Math.abs(THREE.MathUtils.euclideanModulo(h-headings[0]+Math.PI,Math.PI*2)-Math.PI)));
+  assert(drift<1e-6,`the walk curved by ${drift} radians`);
+  const behind=Math.abs(THREE.MathUtils.euclideanModulo(cameraYaw-movement.heading+Math.PI,Math.PI*2)-Math.PI);
+  assert(behind<.2,`camera stopped ${behind} radians off the walk`);
+  world.dispose();
+});
 test('world support checks do not select a ceiling above the player',()=>{
   const world=terrain();assert(Math.abs(world.support(0,2,.06)!.point.y)<.001);assert(Math.abs(world.support(0,2,4.2)!.point.y-4.1)<.001);world.dispose();
 });

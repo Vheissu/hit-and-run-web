@@ -8,9 +8,11 @@ export interface WalkingControls {x:number;z:number;run:boolean;jump:boolean}
 export class PlayerMovement {
   readonly velocity=new THREE.Vector3();heading=0;jumps=0;stomping=false;
   private wasGrounded=false;
-  reset(heading=0){this.velocity.set(0,0,0);this.heading=heading;this.jumps=0;this.stomping=false;this.wasGrounded=false;}
+  /** Camera yaw sampled when the movement keys last changed. A held key keeps its world direction while the camera swings. */
+  private frame=0;private held={x:0,z:0};
+  reset(heading=0){this.velocity.set(0,0,0);this.heading=heading;this.jumps=0;this.stomping=false;this.wasGrounded=false;this.frame=heading;this.held.x=0;this.held.z=0;}
   kick(){if(this.jumps===2)this.stomping=true;}
-  update(state:CarState,controls:WalkingControls,dt:number,terrain:Terrain){
+  update(state:CarState,controls:WalkingControls,dt:number,terrain:Terrain,cameraYaw=state.heading){
     terrain.carry(state);
     const previous=state.position.clone();
     if(state.grounded){this.jumps=0;this.stomping=false;}
@@ -23,13 +25,15 @@ export class PlayerMovement {
     }
     const magnitude=Math.min(1,Math.hypot(controls.x,controls.z));
     const speed=magnitude*(state.grounded?(controls.run?PLAYER_RULES.runSpeed:PLAYER_RULES.walkSpeed):PLAYER_RULES.airSpeed);
-    const direction=state.heading-Math.atan2(controls.x,controls.z);
+    if(controls.x!==this.held.x||controls.z!==this.held.z){this.frame=cameraYaw;this.held.x=controls.x;this.held.z=controls.z;}
+    const direction=this.frame-Math.atan2(controls.x,controls.z);
     const desired=new THREE.Vector3(Math.sin(direction)*speed,0,Math.cos(direction)*speed);
     const delta=desired.sub(this.velocity),rate=state.grounded?(speed>this.velocity.length()?PLAYER_RULES.acceleration:PLAYER_RULES.deceleration):PLAYER_RULES.airAcceleration;
     if(delta.length()>rate*dt)delta.setLength(rate*dt);this.velocity.add(delta);
     if(!state.grounded&&this.velocity.length()>PLAYER_RULES.airSpeed)this.velocity.setLength(PLAYER_RULES.airSpeed);
     if(this.stomping)this.velocity.set(0,0,0);
     if(magnitude)this.heading=direction;
+    state.heading=this.heading;
     state.position.addScaledVector(this.velocity,dt);
     terrain.resolve(state,previous,dt,.35,true,PLAYER_RULES.gravity*(this.stomping?PLAYER_RULES.stompGravityScale:1));
     const travelled=state.position.clone().sub(previous);travelled.y=0;state.speed=travelled.length()/dt;state.distance+=travelled.length();
