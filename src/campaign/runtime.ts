@@ -31,6 +31,16 @@ export class Campaign {
   static async create(world:World,level:number,progress:Progress,callbacks:CampaignCallbacks){
     const [data,assets,rewards]=await Promise.all([json<Chapter>(`campaign/level${level}.json`),json<CampaignAssets>('campaign/assets.json'),json<Reward[]>('campaign/rewards.json')]);
     const campaign=new Campaign(world,data,assets,progress,callbacks,rewards);
+    // The loop below has to stay in order: a waypoint command needs the
+    // character it belongs to. Start every download first so the loop waits
+    // once for the whole crowd rather than once per character.
+    const crowd=new Set<string>();
+    for(const c of data.initial){
+      const id=c.op==='AddPurchaseCarReward'?key(c.args[1]):['AddAmbientCharacter','AddNPCCharacterBonusMission'].includes(c.op)?key(c.args[0]):null;
+      const model=id===null?undefined:assets.characters[id];
+      if(model)crowd.add(model);
+    }
+    for(const model of crowd)void world.assets.character(model).catch(()=>{/* the loop below reports it */});
     for(const c of data.initial){
       if(c.op==='AddAmbientCharacter')await campaign.npc(key(c.args[0]),c.args[1],true);
       if(c.op==='AddNPCCharacterBonusMission'){const npc=await campaign.npc(key(c.args[0]),c.args[2],true,'bonus:'+key(c.args[3]));npc.bonus=key(c.args[3]);}
