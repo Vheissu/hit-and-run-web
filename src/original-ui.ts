@@ -47,6 +47,14 @@ export const originalArt=new OriginalArt();
 export class OriginalHUD {
   campaign:CampaignHUD|null=null;pursuit?:PursuitHUD;canvas=document.createElement('canvas');private c=this.canvas.getContext('2d')!;private time=0;
   constructor(){this.canvas.id='original-hud';this.canvas.setAttribute('role','img');element('hud').append(this.canvas);}
+  /** Draws a target on the radar, pinned to the rim with an arrow when it lies beyond the radar's range. */
+  private marker(c:CanvasRenderingContext2D,cx:number,cy:number,zoom:number,state:CarState,p:ArrayLike<number>){
+    const dx=(p[0]-state.position.x)*zoom,dy=(p[2]-state.position.z)*zoom,d=Math.hypot(dx,dy),rim=43;
+    if(d<=rim){originalArt.draw(c,'mission.png',cx+dx-6,cy+dy-6,12,12);return;}
+    const ux=dx/d,uy=dy/d;
+    c.save();c.translate(cx+ux*52,cy+uy*52);c.rotate(Math.atan2(uy,ux));c.fillStyle='#ffe02a';c.strokeStyle='#1b1b1b';c.lineWidth=1.5;c.beginPath();c.moveTo(6,0);c.lineTo(-4,-6);c.lineTo(-4,6);c.closePath();c.fill();c.stroke();c.restore();
+    originalArt.draw(c,'mission.png',cx+ux*rim-7,cy+uy*rim-7,14,14);
+  }
   draw(dt:number,state:CarState,data:LevelData,challenge:Challenge,traffic:Traffic|undefined,bigMap=false,onFoot=false){
     if(!originalArt.ready)return;this.time+=dt;
     const dpr=Math.min(devicePixelRatio,2),width=innerWidth,height=innerHeight;
@@ -59,14 +67,15 @@ export class OriginalHUD {
     c.strokeStyle='#86cc73';c.lineWidth=7;c.lineCap='round';c.beginPath();for(const [a,b] of data.roads){c.moveTo(a[0],a[2]);c.lineTo(b[0],b[2]);}c.stroke();
     c.fillStyle='#ffca17';for(const vehicle of traffic?.cars??[])if(vehicle.active){c.beginPath();c.arc(vehicle.mesh.position.x,vehicle.mesh.position.z,3,0,Math.PI*2);c.fill();}
     for(const position of this.pursuit?.cars??[]){c.fillStyle=Math.sin(this.time*10)>0?'#ff2626':'#315eff';c.beginPath();c.arc(position.x,position.z,6,0,Math.PI*2);c.fill();originalArt.draw(c,'aicar.png',position.x-6,position.z-6,12,12);}
-    if(this.campaign?.target){const p=this.campaign.target;originalArt.draw(c,'mission.png',p[0]-10,p[2]-10,20,20);}
-    if(challenge.active){const p=challenge.route[challenge.index].position;originalArt.draw(c,'mission.png',p[0]-10,p[2]-10,20,20);}
     c.restore();
     const heat=this.pursuit?.heat??0;
     if(heat>0){c.save();c.beginPath();c.moveTo(cx,cy);c.arc(cx,cy,70,-Math.PI/2,-Math.PI/2+Math.PI*2*heat/100);c.closePath();c.clip();originalArt.draw(c,'hrmetter.png',x,y,152,152);c.restore();}
     originalArt.draw(c,'radartop.png',x+4,y,150,150);
+    originalArt.draw(c,this.pursuit?.active?(Math.sin(this.time*10)>0?'hitnrun2.png':'hitnrun1.png'):heat>78?'hitnrun1.png':'hitnrun0.png',x+40,y+9,73,30);
+    const zoom=bigMap?.17:.58;
+    if(this.campaign?.target)this.marker(c,cx,cy,zoom,state,this.campaign.target);
+    if(challenge.active)this.marker(c,cx,cy,zoom,state,challenge.route[challenge.index].position);
     c.save();c.translate(cx,cy);c.rotate(Math.PI-state.heading);originalArt.draw(c,'user.png',-9,-11,19,22);c.restore();
-    originalArt.draw(c,this.pursuit?.active?(Math.sin(this.time*10)>0?'hitnrun2.png':'hitnrun1.png'):heat>78?'hitnrun1.png':'hitnrun0.png',x+40,y+113,73,30);
     const count=element('coin-count').textContent?.split('/')[0].trim()??'0';originalArt.draw(c,'coins.png',w-180,31,39,34);originalArt.digits(c,count,w-135,21,44);
     // The damage frame and fill use the original Hud.pag coordinates and artwork.
     if(!onFoot){
