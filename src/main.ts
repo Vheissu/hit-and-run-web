@@ -48,7 +48,9 @@ let coins:Coins|undefined;let campaign:Campaign|undefined,campaignAssets:Campaig
 let world:World, traffic:Traffic|undefined, car:THREE.Group|undefined,carOffset=0.65,footprint:VehicleFootprint=DEFAULT_FOOTPRINT;
 let chassis:VehicleProfile=DEFAULT_VEHICLE;
 let catalog:Catalog, loading=true,paused=true,highQuality=true,cameraMode=0,debug=false;
-let onFoot=false,cruise=false,character:Character|undefined,footHeading=0;const parkedPosition=new THREE.Vector3();let parkedHeading=0;
+let onFoot=false,cruise=false,character:Character|undefined,footHeading=0,cameraYaw=0;const parkedPosition=new THREE.Vector3();let parkedHeading=0;
+/** How quickly the on-foot camera swings back behind the character, in radians of remaining error per second. */
+const FOOT_CAMERA_FOLLOW=2.2;
 let level=1, carId='famil_v',carModels=new Map<string,THREE.Group>();
 let last=performance.now(),accumulator=0,time=0,frame=0,fps=60,lastFPS=last,photo=false;
 const previous=new THREE.Vector3(),desiredCamera=new THREE.Vector3(),look=new THREE.Vector3(),smoothLook=new THREE.Vector3(),sunOffset=new THREE.Vector3();
@@ -82,7 +84,7 @@ function respawn(location?:number){
   const road=nearestRoad(place);state.position.copy(road.point);state.heading=road.heading;
   const ground=world.terrain.ground(state.position.x,state.position.z,state.position.y,10);
   if(ground)state.position.y=ground.point.y+0.06;
-  state.speed=0;state.verticalSpeed=0;state.damage=0;state.steer=0;state.grounded=true;walking.reset(state.heading);resetVehicle(state);cruise=false;smoothLook.copy(state.position);motion.reset(state);
+  state.speed=0;state.verticalSpeed=0;state.damage=0;state.steer=0;state.grounded=true;walking.reset(state.heading);cameraYaw=state.heading;resetVehicle(state);cruise=false;smoothLook.copy(state.position);motion.reset(state);
   if(car)car.position.copy(state.position).add(new THREE.Vector3(0,carOffset,0));
   updateCamera(1,true);
 }
@@ -129,7 +131,7 @@ function updateCamera(dt:number,snap=false){
     desiredCamera.set(position.x-Math.sin(angle)*9,position.y+4,position.z-Math.cos(angle)*9);
     look.copy(position).add(new THREE.Vector3(-2.2,1,0));
   }else{
-    const backwards=input.down('KeyB'),heading=motion.heading+(backwards?Math.PI:0);
+    const backwards=input.down('KeyB'),heading=(onFoot?cameraYaw:motion.heading)+(backwards?Math.PI:0);
     const distance=onFoot?4.3:cameraMode===1?12.5:cameraMode===2?0.2:8.1;
     desiredCamera.set(position.x-Math.sin(heading)*distance,position.y+(onFoot?2.7:cameraMode===1?6.5:cameraMode===2?1.55:3.55),position.z-Math.cos(heading)*distance);
     look.set(position.x+Math.sin(heading)*5,position.y+1.2,position.z+Math.cos(heading)*5);
@@ -162,7 +164,7 @@ function animate(now:number){
           if(state.position.distanceTo(parkedPosition)<6){onFoot=false;state.position.copy(parkedPosition);state.heading=parkedHeading;state.speed=0;character.drive(car);element('car-label').textContent=(CAR_NAMES[carId]??carId).toUpperCase();element('drive-hints').innerHTML='<span><kbd>W A S D</kbd> Drive</span><span><kbd>SPACE</kbd> Drift</span><span><kbd>E</kbd> Get out</span><span><kbd>H</kbd> Cruise</span><span><kbd>C</kbd> Camera</span>';toast('Back behind the wheel.');}
           else toast('Get closer to your car.');
         }else if(Math.abs(state.speed)<2){
-          onFoot=true;car.visible=true;cruise=false;parkedPosition.copy(state.position);parkedHeading=state.heading;footHeading=state.heading;
+          onFoot=true;car.visible=true;cruise=false;parkedPosition.copy(state.position);parkedHeading=state.heading;footHeading=state.heading;cameraYaw=state.heading;
           state.position.add(new THREE.Vector3(Math.cos(state.heading)*2,0,-Math.sin(state.heading)*2));state.speed=0;
           walking.reset(state.heading);
           character.walk(scene,state.position,state.heading);element('car-label').textContent=CHARACTER_NAMES[level-1];element('drive-hints').innerHTML='<span><kbd>W A S D</kbd> Walk</span><span><kbd>SHIFT</kbd> Run</span><span><kbd>SPACE</kbd> Jump</span><span><kbd>E</kbd> Get in</span>'; toast('WASD to walk · Shift to run · Space to jump · E to get in.');
@@ -179,7 +181,8 @@ function animate(now:number){
         if(onFoot){
           world.terrain.setVehiclePlatforms(campaign?.interior?[]:[{id:'player',position:parkedPosition,heading:parkedHeading,half:chassis.half,center:chassis.center},...(traffic?.cars.filter(c=>c.active)??[]).map((c,i)=>({id:`traffic:${c.mesh.uuid}`,position:c.position,heading:c.heading,orientation:c.vehicleMotion?.orientation,half:c.profile.half,center:c.profile.center})),...(police?.cars??[]).map((c,i)=>({id:`police:${c.mesh.uuid}`,position:c.position,heading:c.heading,orientation:c.vehicleMotion?.orientation,half:c.profile.half,center:c.profile.center})),...(campaign?.vehicleBodies??[]).map(c=>({id:`mission:${c.mesh.uuid}`,position:c.position,heading:c.heading,orientation:c.vehicleMotion?.orientation,half:c.profile.half,center:c.profile.center}))]);
           const x=(input.down('KeyD','ArrowRight')?1:0)-(input.down('KeyA','ArrowLeft')?1:0),z=(input.down('KeyW','ArrowUp')?1:0)-(input.down('KeyS','ArrowDown')?1:0);
-          const animation=walking.update(state,{x,z,run:input.down('ShiftLeft','ShiftRight'),jump:input.consume('Space')},fixed,world.terrain);footHeading=walking.heading;
+          const animation=walking.update(state,{x,z,run:input.down('ShiftLeft','ShiftRight'),jump:input.consume('Space')},fixed,world.terrain,cameraYaw);footHeading=walking.heading;
+          if(state.speed>.2)cameraYaw+=(THREE.MathUtils.euclideanModulo(footHeading-cameraYaw+Math.PI,Math.PI*2)-Math.PI)*(1-Math.exp(-fixed*FOOT_CAMERA_FOLLOW));
           if(time>kickUntil)character?.play(animation);
         }else{
           world.terrain.setVehiclePlatforms([]);
@@ -240,7 +243,7 @@ function animate(now:number){
   }else if(highQuality)composer.render();else renderer.render(scene,camera);
 }
 function placePlayer(position:Vec3,heading:number,foot:boolean,parked?:Vec3){
-  state.position.fromArray(position);state.heading=heading;state.speed=0;state.verticalSpeed=0;state.steer=0;state.grounded=false;walking.reset(heading);resetVehicle(state);cruise=false;onFoot=foot;footHeading=heading;
+  state.position.fromArray(position);state.heading=heading;state.speed=0;state.verticalSpeed=0;state.steer=0;state.grounded=false;walking.reset(heading);resetVehicle(state);cruise=false;onFoot=foot;footHeading=heading;cameraYaw=heading;
   if(parked)parkedPosition.fromArray(parked);else if(!foot)parkedPosition.copy(state.position);parkedHeading=heading;
   if(car){car.position.copy(foot?parkedPosition:state.position);car.position.y+=carOffset;car.rotation.y=heading+Math.PI;car.visible=true;}
   if(character&&car){if(foot)character.walk(scene,state.position,heading);else character.drive(car);}
