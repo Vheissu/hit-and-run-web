@@ -71,7 +71,7 @@ export class OriginalHUD {
     const heat=this.pursuit?.heat??0;
     if(heat>0){c.save();c.beginPath();c.moveTo(cx,cy);c.arc(cx,cy,70,-Math.PI/2,-Math.PI/2+Math.PI*2*heat/100);c.closePath();c.clip();originalArt.draw(c,'hrmetter.png',x,y,152,152);c.restore();}
     originalArt.draw(c,'radartop.png',x+4,y,150,150);
-    originalArt.draw(c,this.pursuit?.active?(Math.sin(this.time*10)>0?'hitnrun2.png':'hitnrun1.png'):heat>78?'hitnrun1.png':'hitnrun0.png',x+40,y+113,73,30);
+    originalArt.draw(c,this.pursuit?.active?(Math.sin(this.time*10)>0?'hitnrun2.png':'hitnrun1.png'):heat>78?'hitnrun1.png':'hitnrun0.png',x+40,y+9,73,30);
     const zoom=bigMap?.17:.58;
     if(this.campaign?.target)this.marker(c,cx,cy,zoom,state,this.campaign.target);
     if(challenge.active)this.marker(c,cx,cy,zoom,state,challenge.route[challenge.index].position);
