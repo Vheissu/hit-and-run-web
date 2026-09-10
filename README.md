@@ -44,6 +44,18 @@ Press Start, then New Game. Escape opens the pause menu. Options contains the le
 
 Touch driving controls and standard gamepad steering/triggers are available. Full gamepad menu navigation remains unfinished.
 
+### Using Docker
+
+With Docker and Docker Compose installed, you can run the dev server without installing Node.js:
+
+```sh
+git clone https://github.com/Vheissu/hit-and-run-web.git
+cd hit-and-run-web
+docker compose up
+```
+
+Open `http://localhost:5173`. The container bind-mounts the repository, so edits on the host are picked up by Vite's dev server inside the container.
+
 ## Current work
 
 - Seven level variants and five player characters, with original geometry, character animations, UI artwork, bitmap fonts, and the animated living-room menu.
